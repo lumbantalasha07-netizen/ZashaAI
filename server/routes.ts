@@ -5,7 +5,7 @@ import { parse } from "csv-parse/sync";
 import { z } from "zod";
 import { storage } from "./storage";
 import { insertLeadSchema, bulkSendSchema, type Lead, type InsertLead } from "@shared/schema";
-import { findEmailWithProspeo } from "./prospeo";
+import { findValidEmail, generateEmailPatterns, verifyEmailWithMailboxlayer } from "./emailVerifier";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -158,31 +158,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const leadsToProcess = createdLeads.slice(0, 5);
       console.log(`Processing first ${leadsToProcess.length} leads for email enrichment`);
 
-      // Enrich emails via Prospeo and generate templates
+      // Enrich emails via Mailboxlayer and generate templates
       const leadsWithMessages = await Promise.all(
         leadsToProcess.map(async (lead) => {
           let updatedLead = lead;
 
           if (!lead.email && lead.firstName && lead.domain) {
-            console.log(`Looking up email for ${lead.firstName} ${lead.lastName} at ${lead.domain}`);
-            const prospeoResult = await findEmailWithProspeo(
+            console.log(`Looking up email for ${lead.firstName} ${lead.lastName || ""} at ${lead.domain}`);
+            
+            const { foundEmail, verificationResults } = await findValidEmail(
               lead.firstName,
               lead.lastName || "",
               lead.domain
             );
 
-            if (prospeoResult.success && prospeoResult.email) {
-              console.log(`✓ Found email: ${prospeoResult.email} (confidence: ${prospeoResult.confidence})`);
+            if (foundEmail) {
+              console.log(`✓ Found valid email: ${foundEmail}`);
               updatedLead = await storage.updateLead(lead.id, {
-                foundEmail: prospeoResult.email,
-                emailConfidence: prospeoResult.confidence,
+                foundEmail: foundEmail,
                 enrichmentStatus: "enriched",
               }) || lead;
             } else {
-              console.log(`✗ No email found: ${prospeoResult.error}`);
+              console.log(`✗ No valid email found (tested ${verificationResults.length} patterns)`);
               await storage.updateLead(lead.id, {
                 enrichmentStatus: "failed",
-                errorMessage: prospeoResult.error,
+                errorMessage: `No valid email found among ${verificationResults.length} tested patterns`,
               });
             }
           } else if (lead.email) {
@@ -358,6 +358,108 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting all leads:", error);
       res.status(500).json({ error: "Failed to delete leads" });
+    }
+  });
+
+  // Test email validation endpoint (Mailboxlayer)
+  app.get("/api/test-email-validation", async (_req, res) => {
+    try {
+      const allLeads = await storage.getAllLeads();
+      const testLeads = allLeads.slice(0, 5);
+
+      console.log("\n=== Email Validation Test Results ===");
+      console.log(`Testing ${testLeads.length} leads with Mailboxlayer\n`);
+
+      const results = [];
+
+      for (const lead of testLeads) {
+        console.log(`\n${lead.firstName} ${lead.lastName || ""} (${lead.company || "No company"})`);
+        console.log(`  Domain: ${lead.domain || "No domain"}`);
+
+        if (!lead.domain || !lead.firstName) {
+          console.log(`  ⚠ Skipped: Missing required data`);
+          results.push({
+            leadId: lead.id,
+            name: `${lead.firstName} ${lead.lastName || ""}`,
+            company: lead.company,
+            domain: lead.domain,
+            skipped: true,
+            reason: "Missing domain or first name",
+          });
+          continue;
+        }
+
+        const emailPatterns = generateEmailPatterns(
+          lead.firstName,
+          lead.lastName || "",
+          lead.domain
+        );
+
+        console.log(`  Generated ${emailPatterns.length} email patterns:`);
+        emailPatterns.forEach((pattern) => {
+          console.log(`    - ${pattern.pattern}: ${pattern.email}`);
+        });
+
+        const { foundEmail, verificationResults } = await findValidEmail(
+          lead.firstName,
+          lead.lastName || "",
+          lead.domain
+        );
+
+        console.log(`\n  Verification Results:`);
+        verificationResults.forEach((result, idx) => {
+          const status = result.valid
+            ? "✓ VALID"
+            : result.error
+            ? `✗ ERROR: ${result.error}`
+            : `✗ Invalid (SMTP: ${result.smtpCheck}, Score: ${result.score})`;
+          console.log(`    ${idx + 1}. ${result.email} - ${status}`);
+        });
+
+        if (foundEmail) {
+          console.log(`\n  ✅ Chosen Valid Email: ${foundEmail}`);
+          
+          await storage.updateLead(lead.id, {
+            foundEmail: foundEmail,
+            enrichmentStatus: "enriched",
+          });
+        } else {
+          console.log(`\n  ❌ No valid email found`);
+        }
+
+        results.push({
+          leadId: lead.id,
+          name: `${lead.firstName} ${lead.lastName || ""}`,
+          company: lead.company,
+          domain: lead.domain,
+          emailPatterns: emailPatterns.map((p) => p.email),
+          verificationResults: verificationResults.map((r) => ({
+            email: r.email,
+            valid: r.valid,
+            score: r.score,
+            smtpCheck: r.smtpCheck,
+            error: r.error,
+          })),
+          chosenEmail: foundEmail,
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      console.log("\n=================================\n");
+
+      res.json({
+        success: true,
+        totalLeads: allLeads.length,
+        testedCount: testLeads.length,
+        results,
+      });
+    } catch (error) {
+      console.error("Error in test-email-validation:", error);
+      res.status(500).json({
+        error: "Failed to test email validation",
+        details: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   });
 
