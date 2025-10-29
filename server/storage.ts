@@ -1,25 +1,7 @@
 import { type Lead, type InsertLead, type UpdateLead, leads } from "@shared/schema";
 import { randomUUID } from "crypto";
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+import { db } from "./db";
 import { eq } from "drizzle-orm";
-
-let connectionString = process.env.DATABASE_URL;
-
-if (!connectionString) {
-  const supabaseUrl = process.env.VITE_SUPABASE_URL;
-  if (supabaseUrl) {
-    const projectRef = supabaseUrl.replace('https://', '').split('.')[0];
-    connectionString = `https://${projectRef}.supabase.co/rest/v1/`;
-  }
-}
-
-if (!connectionString) {
-  throw new Error("DATABASE_URL or VITE_SUPABASE_URL environment variable is required");
-}
-
-const sql = neon(connectionString);
-const db = drizzle(sql);
 
 export interface IStorage {
   createLead(lead: InsertLead): Promise<Lead>;
@@ -32,11 +14,17 @@ export interface IStorage {
   deleteAllLeads(): Promise<void>;
 }
 
-export class SupabaseStorage implements IStorage {
+export class DatabaseStorage implements IStorage {
   async createLead(insertLead: InsertLead): Promise<Lead> {
     const id = randomUUID();
     const lead: Lead = {
-      ...insertLead,
+      firstName: insertLead.firstName,
+      lastName: insertLead.lastName ?? null,
+      company: insertLead.company ?? null,
+      website: insertLead.website ?? null,
+      domain: insertLead.domain ?? null,
+      profileUrl: insertLead.profileUrl ?? null,
+      email: insertLead.email ?? null,
       id,
       enrichmentStatus: "pending",
       sendStatus: "pending",
@@ -56,7 +44,13 @@ export class SupabaseStorage implements IStorage {
 
   async createLeads(insertLeads: InsertLead[]): Promise<Lead[]> {
     const leadsToInsert: Lead[] = insertLeads.map(insertLead => ({
-      ...insertLead,
+      firstName: insertLead.firstName,
+      lastName: insertLead.lastName ?? null,
+      company: insertLead.company ?? null,
+      website: insertLead.website ?? null,
+      domain: insertLead.domain ?? null,
+      profileUrl: insertLead.profileUrl ?? null,
+      email: insertLead.email ?? null,
       id: randomUUID(),
       enrichmentStatus: "pending",
       sendStatus: "pending",
@@ -98,7 +92,7 @@ export class SupabaseStorage implements IStorage {
   }
 
   async deleteLead(id: string): Promise<boolean> {
-    const result = await db.delete(leads).where(eq(leads.id, id));
+    await db.delete(leads).where(eq(leads.id, id));
     return true;
   }
 
@@ -107,4 +101,4 @@ export class SupabaseStorage implements IStorage {
   }
 }
 
-export const storage = new SupabaseStorage();
+export const storage = new DatabaseStorage();

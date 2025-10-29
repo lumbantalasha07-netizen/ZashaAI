@@ -119,7 +119,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Log the first record to see what columns we have
       if (records.length > 0) {
-        console.log("CSV Columns found:", Object.keys(records[0]));
+        console.log("CSV Columns found:", Object.keys(records[0] as Record<string, unknown>));
         console.log("First record sample:", records[0]);
       }
 
