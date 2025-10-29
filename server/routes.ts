@@ -115,23 +115,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       console.log(`Processing ${records.length} leads from CSV`);
+      
+      // Log the first record to see what columns we have
+      if (records.length > 0) {
+        console.log("CSV Columns found:", Object.keys(records[0]));
+        console.log("First record sample:", records[0]);
+      }
 
       const insertLeads: InsertLead[] = records.map((record: any) => {
+        // Try multiple possible column name variations
+        const firstName = record.first_name || record.firstName || record.First_Name || record['First Name'] || record.name || record.Name || record.fullName || record.full_name || "";
+        const lastName = record.last_name || record.lastName || record.Last_Name || record['Last Name'] || "";
+        const company = record.company || record.Company || record.business_name || record.businessName || record.Business_Name || record['Business Name'] || "";
+        const website = record.website || record.Website || record.domain || record.Domain || record.url || record.URL || record.websiteUrl || "";
+        const email = record.email || record.Email || record.e_mail || record.E_mail || record['E-mail'] || record.emailAddress || "";
+        const profileUrl = record.profile_url || record.profileUrl || record.Profile_URL || record['Profile URL'] || record.instagram || record.instagramUrl || "";
+        
         const hasWebsite = record.has_website === "true" || 
                           record.has_website === "1" || 
                           record.hasWebsite === "true" ||
+                          !!website ||
                           !!record.website ||
                           !!record.domain;
 
         return {
-          firstName: record.first_name || record.firstName || "",
-          lastName: record.last_name || record.lastName || "",
-          company: record.company || record.Company || "",
-          website: record.website || record.domain || "",
-          domain: record.domain || record.website || "",
+          firstName,
+          lastName,
+          company,
+          website,
+          domain: record.domain || website || "",
           hasWebsite,
-          profileUrl: record.profile_url || record.profileUrl || "",
-          email: record.email || "",
+          profileUrl,
+          email,
         };
       });
 
