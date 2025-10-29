@@ -19,6 +19,7 @@ export default function Dashboard() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [isFindingEmails, setIsFindingEmails] = useState(false);
 
   // Fetch all leads
   const { data: leads = [], refetch: refetchLeads, isLoading } = useQuery<Lead[]>({
@@ -42,9 +43,46 @@ export default function Dashboard() {
     setShowConfirm(true);
   };
 
-  const leadsWithEmail = leads.filter(l => l.email);
+  const handleFindEmails = async () => {
+    setIsFindingEmails(true);
+    try {
+      const response = await fetch("/api/leads/find-emails", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast({
+          title: "Email Search Complete",
+          description: `Found ${data.successCount} emails. ${data.failCount} failed, ${data.skippedCount} skipped.`,
+        });
+        refetchLeads();
+      } else {
+        toast({
+          title: "Error",
+          description: data.error || "Failed to find emails",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to connect to server",
+        variant: "destructive",
+      });
+    } finally {
+      setIsFindingEmails(false);
+    }
+  };
+
+  const leadsWithEmail = leads.filter(l => l.email || l.foundEmail);
   const leadsWithWebsite = leadsWithEmail.filter(l => l.hasWebsite);
   const leadsWithoutWebsite = leadsWithEmail.filter(l => !l.hasWebsite);
+  const pendingLeads = leads.filter(l => l.enrichmentStatus === "pending");
 
   return (
     <div className="min-h-screen bg-background">
@@ -108,13 +146,63 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          {/* Step 2: Message Templates */}
+          {/* Step 2: Find Emails */}
+          {leads.length > 0 && (
+            <Card data-testid="card-find-emails-section">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <span className="text-sm font-semibold">2</span>
+                  </div>
+                  <div>
+                    <CardTitle className="text-xl">Find & Verify Emails</CardTitle>
+                    <CardDescription>
+                      Automatically find and verify email addresses for your leads using Mailboxlayer
+                    </CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between p-6 bg-muted/30 rounded-lg border">
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-foreground">
+                      {pendingLeads.length} {pendingLeads.length === 1 ? 'lead needs' : 'leads need'} email verification
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {leadsWithEmail.length} emails already found • {leads.length - leadsWithEmail.length - pendingLeads.length} failed/skipped
+                    </p>
+                  </div>
+                  <Button 
+                    size="lg"
+                    onClick={handleFindEmails}
+                    disabled={pendingLeads.length === 0 || isFindingEmails}
+                    data-testid="button-find-emails"
+                    className="gap-2"
+                  >
+                    {isFindingEmails ? (
+                      <>
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-solid border-current border-r-transparent"></div>
+                        Finding Emails...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-4 w-4" />
+                        Find Emails
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Step 3: Message Templates */}
           {leads.length > 0 && (
             <Card data-testid="card-templates-section">
               <CardHeader>
                 <div className="flex items-center gap-3">
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <span className="text-sm font-semibold">2</span>
+                    <span className="text-sm font-semibold">3</span>
                   </div>
                   <div>
                     <CardTitle className="text-xl">Message Templates</CardTitle>
@@ -133,14 +221,14 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {/* Step 3: Review Leads */}
+          {/* Step 4: Review Leads */}
           {leads.length > 0 && (
             <Card data-testid="card-leads-table-section">
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                      <span className="text-sm font-semibold">3</span>
+                      <span className="text-sm font-semibold">4</span>
                     </div>
                     <div>
                       <CardTitle className="text-xl">Review & Edit Leads</CardTitle>
@@ -161,13 +249,13 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {/* Step 4: Send Emails */}
+          {/* Step 5: Send Emails */}
           {leadsWithEmail.length > 0 && (
             <Card data-testid="card-send-section">
               <CardHeader>
                 <div className="flex items-center gap-3">
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <span className="text-sm font-semibold">4</span>
+                    <span className="text-sm font-semibold">5</span>
                   </div>
                   <div>
                     <CardTitle className="text-xl">Send Campaigns</CardTitle>

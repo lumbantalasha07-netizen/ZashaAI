@@ -151,67 +151,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
-      // Create leads first
+      // Create leads
       const createdLeads = await storage.createLeads(insertLeads);
 
-      // Process only first 5 rows for testing
-      const leadsToProcess = createdLeads.slice(0, 5);
-      console.log(`Processing first ${leadsToProcess.length} leads for email enrichment`);
-
-      // Enrich emails via Mailboxlayer and generate templates
-      const leadsWithMessages = await Promise.all(
-        leadsToProcess.map(async (lead) => {
-          let updatedLead = lead;
-
-          if (!lead.email && lead.firstName && lead.domain) {
-            console.log(`Looking up email for ${lead.firstName} ${lead.lastName || ""} at ${lead.domain}`);
-            
-            const { foundEmail, verificationResults } = await findValidEmail(
-              lead.firstName,
-              lead.lastName || "",
-              lead.domain
-            );
-
-            if (foundEmail) {
-              console.log(`✓ Found valid email: ${foundEmail}`);
-              updatedLead = await storage.updateLead(lead.id, {
-                foundEmail: foundEmail,
-                enrichmentStatus: "enriched",
-              }) || lead;
-            } else {
-              console.log(`✗ No valid email found (tested ${verificationResults.length} patterns)`);
-              await storage.updateLead(lead.id, {
-                enrichmentStatus: "failed",
-                errorMessage: `No valid email found among ${verificationResults.length} tested patterns`,
-              });
-            }
-          } else if (lead.email) {
-            await storage.updateLead(lead.id, {
-              enrichmentStatus: "skipped",
-            });
-          }
-
-          const template = generateEmailTemplate(updatedLead);
-          return storage.updateLead(updatedLead.id, {
-            subject: template.subject,
-            messageBody: template.body,
-          });
-        })
-      );
-
-      // Mark remaining leads as pending enrichment
-      const remainingLeads = createdLeads.slice(5);
-      if (remainingLeads.length > 0) {
-        console.log(`${remainingLeads.length} leads remaining (not processed in test mode)`);
-      }
-
-      console.log(`Created ${leadsWithMessages.length} leads with email enrichment and generated messages`);
+      console.log(`Created ${createdLeads.length} leads. Email enrichment can be triggered manually.`);
 
       res.json({
         success: true,
         leadsCount: createdLeads.length,
-        processedCount: leadsWithMessages.length,
-        leads: leadsWithMessages.filter(Boolean) as Lead[],
+        leads: createdLeads,
       });
     } catch (error) {
       console.error("Error processing CSV:", error);
@@ -282,6 +230,120 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ 
         error: "Failed to send test email",
         details: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Find emails for all pending leads
+  app.post("/api/leads/find-emails", async (_req, res) => {
+    try {
+      const allLeads = await storage.getAllLeads();
+      const pendingLeads = allLeads.filter(
+        (lead) => lead.enrichmentStatus === "pending"
+      );
+
+      console.log(`Starting email enrichment for ${pendingLeads.length} leads`);
+
+      let successCount = 0;
+      let failCount = 0;
+      let skippedCount = 0;
+
+      for (const lead of pendingLeads) {
+        try {
+          if (lead.email) {
+            await storage.updateLead(lead.id, {
+              enrichmentStatus: "skipped",
+            });
+            skippedCount++;
+            console.log(`⊘ Skipped ${lead.firstName} ${lead.lastName || ""} (already has email)`);
+            continue;
+          }
+
+          if (!lead.firstName) {
+            await storage.updateLead(lead.id, {
+              enrichmentStatus: "failed",
+              errorMessage: "Missing first name - cannot generate email patterns",
+            });
+            failCount++;
+            console.log(`✗ Failed ${lead.id} (missing first name)`);
+            continue;
+          }
+
+          if (!lead.domain) {
+            await storage.updateLead(lead.id, {
+              enrichmentStatus: "failed",
+              errorMessage: "Missing domain - cannot generate email patterns",
+            });
+            failCount++;
+            console.log(`✗ Failed ${lead.id} (missing domain)`);
+            continue;
+          }
+
+          // Sanitize domain: remove protocol and paths
+          let sanitizedDomain = lead.domain.toLowerCase().trim();
+          sanitizedDomain = sanitizedDomain.replace(/^https?:\/\//, ''); // Remove protocol
+          sanitizedDomain = sanitizedDomain.replace(/^www\./, ''); // Remove www.
+          sanitizedDomain = sanitizedDomain.split('/')[0]; // Remove paths
+
+          console.log(`🔍 Finding email for ${lead.firstName} ${lead.lastName || ""} at ${sanitizedDomain}`);
+
+          const { foundEmail, verificationResults } = await findValidEmail(
+            lead.firstName,
+            lead.lastName || "",
+            sanitizedDomain
+          );
+
+          if (foundEmail) {
+            console.log(`✓ Found valid email: ${foundEmail}`);
+            await storage.updateLead(lead.id, {
+              foundEmail: foundEmail,
+              enrichmentStatus: "enriched",
+            });
+
+            const template = generateEmailTemplate({
+              ...lead,
+              foundEmail,
+            });
+            await storage.updateLead(lead.id, {
+              subject: template.subject,
+              messageBody: template.body,
+            });
+
+            successCount++;
+          } else {
+            console.log(`✗ No valid email found (tested ${verificationResults.length} patterns)`);
+            await storage.updateLead(lead.id, {
+              enrichmentStatus: "failed",
+              errorMessage: `No valid email found among ${verificationResults.length} tested patterns`,
+            });
+            failCount++;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch (error) {
+          await storage.updateLead(lead.id, {
+            enrichmentStatus: "failed",
+            errorMessage: error instanceof Error ? error.message : "Unknown error",
+          });
+          failCount++;
+          console.error(`✗ Failed to process ${lead.firstName}:`, error);
+        }
+      }
+
+      console.log(`Email enrichment complete: ${successCount} found, ${failCount} failed, ${skippedCount} skipped`);
+
+      res.json({
+        success: true,
+        total: pendingLeads.length,
+        successCount,
+        failCount,
+        skippedCount,
+      });
+    } catch (error) {
+      console.error("Error in email enrichment:", error);
+      res.status(500).json({
+        error: "Failed to find emails",
+        details: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
