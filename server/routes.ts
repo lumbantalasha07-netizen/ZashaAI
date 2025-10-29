@@ -5,6 +5,7 @@ import { parse } from "csv-parse/sync";
 import { z } from "zod";
 import { storage } from "./storage";
 import { insertLeadSchema, bulkSendSchema, type Lead, type InsertLead } from "@shared/schema";
+import { findEmailWithProspeo } from "./prospeo";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -150,25 +151,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
-      // Create leads and generate messages
+      // Create leads first
       const createdLeads = await storage.createLeads(insertLeads);
 
-      // Generate email templates for all leads
+      // Process only first 5 rows for testing
+      const leadsToProcess = createdLeads.slice(0, 5);
+      console.log(`Processing first ${leadsToProcess.length} leads for email enrichment`);
+
+      // Enrich emails via Prospeo and generate templates
       const leadsWithMessages = await Promise.all(
-        createdLeads.map(async (lead) => {
-          const template = generateEmailTemplate(lead);
-          return storage.updateLead(lead.id, {
+        leadsToProcess.map(async (lead) => {
+          let updatedLead = lead;
+
+          if (!lead.email && lead.firstName && lead.domain) {
+            console.log(`Looking up email for ${lead.firstName} ${lead.lastName} at ${lead.domain}`);
+            const prospeoResult = await findEmailWithProspeo(
+              lead.firstName,
+              lead.lastName || "",
+              lead.domain
+            );
+
+            if (prospeoResult.success && prospeoResult.email) {
+              console.log(`✓ Found email: ${prospeoResult.email} (confidence: ${prospeoResult.confidence})`);
+              updatedLead = await storage.updateLead(lead.id, {
+                foundEmail: prospeoResult.email,
+                emailConfidence: prospeoResult.confidence,
+                enrichmentStatus: "enriched",
+              }) || lead;
+            } else {
+              console.log(`✗ No email found: ${prospeoResult.error}`);
+              await storage.updateLead(lead.id, {
+                enrichmentStatus: "failed",
+                errorMessage: prospeoResult.error,
+              });
+            }
+          } else if (lead.email) {
+            await storage.updateLead(lead.id, {
+              enrichmentStatus: "skipped",
+            });
+          }
+
+          const template = generateEmailTemplate(updatedLead);
+          return storage.updateLead(updatedLead.id, {
             subject: template.subject,
             messageBody: template.body,
           });
         })
       );
 
-      console.log(`Created ${leadsWithMessages.length} leads with generated messages`);
+      // Mark remaining leads as pending enrichment
+      const remainingLeads = createdLeads.slice(5);
+      if (remainingLeads.length > 0) {
+        console.log(`${remainingLeads.length} leads remaining (not processed in test mode)`);
+      }
+
+      console.log(`Created ${leadsWithMessages.length} leads with email enrichment and generated messages`);
 
       res.json({
         success: true,
-        leadsCount: leadsWithMessages.length,
+        leadsCount: createdLeads.length,
+        processedCount: leadsWithMessages.length,
         leads: leadsWithMessages.filter(Boolean) as Lead[],
       });
     } catch (error) {
@@ -316,6 +358,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting all leads:", error);
       res.status(500).json({ error: "Failed to delete leads" });
+    }
+  });
+
+  // Test email lookup endpoint
+  app.get("/api/test-email-lookup", async (_req, res) => {
+    try {
+      const allLeads = await storage.getAllLeads();
+
+      const testResults = allLeads.slice(0, 5).map(lead => ({
+        id: lead.id,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        company: lead.company,
+        domain: lead.domain,
+        originalEmail: lead.email,
+        foundEmail: lead.foundEmail,
+        emailConfidence: lead.emailConfidence,
+        enrichmentStatus: lead.enrichmentStatus,
+        errorMessage: lead.errorMessage,
+      }));
+
+      console.log("\n=== Email Lookup Test Results ===");
+      testResults.forEach((result, index) => {
+        console.log(`\n${index + 1}. ${result.firstName} ${result.lastName} (${result.company})`);
+        console.log(`   Domain: ${result.domain}`);
+        console.log(`   Original Email: ${result.originalEmail || "None"}`);
+        console.log(`   Found Email: ${result.foundEmail || "None"}`);
+        console.log(`   Confidence: ${result.emailConfidence || "N/A"}`);
+        console.log(`   Status: ${result.enrichmentStatus}`);
+        if (result.errorMessage) {
+          console.log(`   Error: ${result.errorMessage}`);
+        }
+      });
+      console.log("\n=================================\n");
+
+      res.json({
+        success: true,
+        totalLeads: allLeads.length,
+        testResults,
+      });
+    } catch (error) {
+      console.error("Error in test-email-lookup:", error);
+      res.status(500).json({
+        error: "Failed to retrieve test results",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
     }
   });
 

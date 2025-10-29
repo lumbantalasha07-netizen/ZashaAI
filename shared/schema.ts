@@ -13,12 +13,15 @@ export const leads = pgTable("leads", {
   hasWebsite: boolean("has_website").default(false).notNull(),
   profileUrl: text("profile_url"),
   email: text("email"),
+  foundEmail: text("found_email"),
+  emailConfidence: text("email_confidence"),
   enrichmentStatus: text("enrichment_status").default("pending").notNull(), // pending, enriched, failed, skipped
   sendStatus: text("send_status").default("pending").notNull(), // pending, sending, sent, failed
   subject: text("subject"),
   messageBody: text("message_body"),
   errorMessage: text("error_message"),
   sentAt: timestamp("sent_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const insertLeadSchema = createInsertSchema(leads).omit({

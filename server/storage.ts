@@ -1,8 +1,27 @@
-import { type Lead, type InsertLead, type UpdateLead } from "@shared/schema";
+import { type Lead, type InsertLead, type UpdateLead, leads } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { neon } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-http";
+import { eq } from "drizzle-orm";
+
+let connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  const supabaseUrl = process.env.VITE_SUPABASE_URL;
+  if (supabaseUrl) {
+    const projectRef = supabaseUrl.replace('https://', '').split('.')[0];
+    connectionString = `https://${projectRef}.supabase.co/rest/v1/`;
+  }
+}
+
+if (!connectionString) {
+  throw new Error("DATABASE_URL or VITE_SUPABASE_URL environment variable is required");
+}
+
+const sql = neon(connectionString);
+const db = drizzle(sql);
 
 export interface IStorage {
-  // Lead management
   createLead(lead: InsertLead): Promise<Lead>;
   createLeads(leads: InsertLead[]): Promise<Lead[]>;
   getLead(id: string): Promise<Lead | undefined>;
@@ -13,13 +32,7 @@ export interface IStorage {
   deleteAllLeads(): Promise<void>;
 }
 
-export class MemStorage implements IStorage {
-  private leads: Map<string, Lead>;
-
-  constructor() {
-    this.leads = new Map();
-  }
-
+export class SupabaseStorage implements IStorage {
   async createLead(insertLead: InsertLead): Promise<Lead> {
     const id = randomUUID();
     const lead: Lead = {
@@ -28,44 +41,56 @@ export class MemStorage implements IStorage {
       enrichmentStatus: "pending",
       sendStatus: "pending",
       hasWebsite: insertLead.hasWebsite ?? false,
+      foundEmail: null,
+      emailConfidence: null,
       subject: null,
       messageBody: null,
       errorMessage: null,
       sentAt: null,
+      createdAt: new Date(),
     };
-    this.leads.set(id, lead);
+
+    await db.insert(leads).values(lead);
     return lead;
   }
 
   async createLeads(insertLeads: InsertLead[]): Promise<Lead[]> {
-    const leads: Lead[] = [];
-    for (const insertLead of insertLeads) {
-      const lead = await this.createLead(insertLead);
-      leads.push(lead);
-    }
-    return leads;
+    const leadsToInsert: Lead[] = insertLeads.map(insertLead => ({
+      ...insertLead,
+      id: randomUUID(),
+      enrichmentStatus: "pending",
+      sendStatus: "pending",
+      hasWebsite: insertLead.hasWebsite ?? false,
+      foundEmail: null,
+      emailConfidence: null,
+      subject: null,
+      messageBody: null,
+      errorMessage: null,
+      sentAt: null,
+      createdAt: new Date(),
+    }));
+
+    await db.insert(leads).values(leadsToInsert);
+    return leadsToInsert;
   }
 
   async getLead(id: string): Promise<Lead | undefined> {
-    return this.leads.get(id);
+    const result = await db.select().from(leads).where(eq(leads.id, id)).limit(1);
+    return result[0];
   }
 
   async getAllLeads(): Promise<Lead[]> {
-    return Array.from(this.leads.values());
+    return await db.select().from(leads);
   }
 
   async updateLead(id: string, updates: UpdateLead): Promise<Lead | undefined> {
-    const lead = this.leads.get(id);
-    if (!lead) return undefined;
-
-    const updatedLead: Lead = { ...lead, ...updates };
-    this.leads.set(id, updatedLead);
-    return updatedLead;
+    await db.update(leads).set(updates).where(eq(leads.id, id));
+    return await this.getLead(id);
   }
 
-  async updateLeads(updates: { id: string; data: UpdateLead }[]): Promise<Lead[]> {
+  async updateLeads(updatesList: { id: string; data: UpdateLead }[]): Promise<Lead[]> {
     const results: Lead[] = [];
-    for (const { id, data } of updates) {
+    for (const { id, data } of updatesList) {
       const updated = await this.updateLead(id, data);
       if (updated) results.push(updated);
     }
@@ -73,12 +98,13 @@ export class MemStorage implements IStorage {
   }
 
   async deleteLead(id: string): Promise<boolean> {
-    return this.leads.delete(id);
+    const result = await db.delete(leads).where(eq(leads.id, id));
+    return true;
   }
 
   async deleteAllLeads(): Promise<void> {
-    this.leads.clear();
+    await db.delete(leads);
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new SupabaseStorage();
