@@ -1,0 +1,260 @@
+package.json
+{
+  "name": "zasha-email-automation",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "csv-parser": "^3.0.0",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.2",
+    "formidable": "^2.1.1",
+    "mailgun-js": "^0.22.0",
+    "p-limit": "^3.1.0"
+  }
+}
+
+server.js
+
+(Full server: CSV upload, Snov/Hunter switch, templated email generation, bulk send with rate-limiting)
+
+// server.js
+require('dotenv').config();
+const express = require('express');
+const fs = require('fs');
+const csv = require('csv-parser');
+const axios = require('axios');
+const Mailgun = require('mailgun-js');
+const formidable = require('formidable');
+const path = require('path');
+const PLimit = require('p-limit');
+
+const app = express();
+app.use(express.json());
+
+const HUNTER_KEY = process.env.HUNTER_API_KEY || '';
+const SNOV_KEY = process.env.SNOV_API_KEY || '';
+const EMAIL_PROVIDER = process.env.EMAIL_PROVIDER || 'mailgun'; // mailgun or ses (ses not implemented here)
+const MAILGUN_API_KEY = process.env.MAILGUN_API_KEY || '';
+const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN || '';
+const FROM_EMAIL = process.env.FROM_EMAIL || `Zasha <hello@${process.env.MAILGUN_DOMAIN || 'example.com'}>`;
+const SIGNOFF_NAME = process.env.SIGNOFF_NAME || 'Zasha';
+const SEND_BATCH_DELAY_MS = Number(process.env.SEND_BATCH_DELAY_MS || 1000); // delay between emails (ms)
+const CONCURRENT_LOOKUPS = Number(process.env.CONCURRENT_LOOKUPS || 5);
+
+const mg = MAILGUN_API_KEY && MAILGUN_DOMAIN ? Mailgun({apiKey: MAILGUN_API_KEY, domain: MAILGUN_DOMAIN}) : null;
+
+// ---------- Email lookup functions ----------
+
+// Hunter email-finder
+async function findWithHunter(firstName, lastName, domain) {
+  if (!HUNTER_KEY || !domain || !firstName) return null;
+  try {
+    const url = `https://api.hunter.io/v2/email-finder?first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&domain=${encodeURIComponent(domain)}&api_key=${HUNTER_KEY}`;
+    const r = await axios.get(url, {timeout: 15000});
+    if (r.data && r.data.data && r.data.data.email) {
+      return {email: r.data.data.email, score: r.data.data.score || null};
+    }
+  } catch (e) {
+    console.error('Hunter error', e.message);
+  }
+  return null;
+}
+
+// Snov.io domain/email finder (example endpoint - uses Domain Search or Email Finder APIs)
+// NOTE: Snov API has multiple endpoints; this example uses the "email-finder" endpoint style.
+// Confirm exact endpoint/params in Snov docs and adjust as needed.
+async function findWithSnov(firstName, lastName, domain) {
+  if (!SNOV_KEY || !domain || !firstName) return null;
+  try {
+    const url = `https://api.snov.io/v2/get-emails-from-names?access_token=${SNOV_KEY}`;
+    // Snov may require POST with JSON; below is a placeholder request body. See Snov API docs.
+    // We'll attempt a POST with body containing domain+name
+    const body = {firstName, lastName, domain};
+    const r = await axios.post(url, body, {timeout: 20000});
+    // Adapt to response shape
+    if (r.data && r.data.emails && r.data.emails.length) {
+      // pick first
+      return {email: r.data.emails[0].email, score: r.data.emails[0].confidence || null};
+    }
+  } catch (e) {
+    console.error('Snov error', e.message);
+  }
+  return null;
+}
+
+// Lookup selector (tries Snov first (if configured), then Hunter)
+async function findEmail(firstName, lastName, domain) {
+  if (!domain || !firstName) return null;
+  if (SNOV_KEY) {
+    const s = await findWithSnov(firstName, lastName, domain);
+    if (s && s.email) return {...s, provider:'snov'};
+  }
+  if (HUNTER_KEY) {
+    const h = await findWithHunter(firstName, lastName, domain);
+    if (h && h.email) return {...h, provider:'hunter'};
+  }
+  return null;
+}
+
+// ---------- Email template generator (no OpenAI required) ----------
+function generateTemplate(profile) {
+  const first = profile.first_name || profile.firstName || profile.first || '';
+  const company = profile.company || profile.Company || profile.company_name || '';
+  const hasWebsite = !!(profile.website || profile.domain || profile.has_website === 'true');
+
+  if (hasWebsite) {
+    const subject = `Quick idea for ${company || ''}`.trim();
+    const body = `Hi ${first || ''}, noticed ${company || 'your business'}’s site — quick idea to add AI automation that increases online orders and cuts staff time.\n\nWe build a small automation (menu + chatbot + order routing) that typically lifts online conversions in 30 days. Interested in a 15-minute demo next week?\n\n— ${SIGNOFF_NAME}`;
+    return {subject, body};
+  } else {
+    const subject = `Build a modern site + AI for ${company || ''}`.trim();
+    const body = `Hi ${first || ''}, I scraped your profile — I can build a modern website for ${company || 'your business'} and add simple AI automations (chat/order/booking) so you start taking more orders online.\n\nI can show a one-page plan and estimate in 15 minutes. When works best for a quick call?\n\n— ${SIGNOFF_NAME}`;
+    return {subject, body};
+  }
+}
+
+// ---------- Mail sending ----------
+async function sendViaMailgun(to, subject, text) {
+  if (!mg) throw new Error('Mailgun not configured');
+  const data = {from: FROM_EMAIL, to, subject, text};
+  return mg.messages().send(data);
+}
+
+// ---------- CSV upload endpoint (form upload) ----------
+app.post('/upload-csv', (req, res) => {
+  const form = formidable({ multiples: false, uploadDir: './uploads', keepExtensions: true });
+  form.parse(req, (err, fields, files) => {
+    if (err) return res.status(500).json({error: err.message});
+    if (!files.file) return res.status(400).json({error: 'file required (form field name: file)'});
+    const filepath = files.file.path;
+    const rows = [];
+    fs.createReadStream(filepath)
+      .pipe(csv())
+      .on('data', (data) => rows.push(data))
+      .on('end', async () => {
+        // do lookups with concurrency limit
+        const limit = PLimit(CONCURRENT_LOOKUPS);
+        const promises = rows.map(row => limit(async () => {
+          const firstName = row.first_name || row.firstName || row.FirstName || '';
+          const lastName = row.last_name || row.lastName || '';
+          const domain = row.domain || row.website || (row.company_domain || '');
+          const found = await findEmail(firstName, lastName, domain);
+          row.found_email = found ? found.email : '';
+          row.found_provider = found ? found.provider : '';
+          row.found_score = found ? found.score : '';
+          const tmpl = generateTemplate({...row});
+          row.recommended_subject = tmpl.subject;
+          row.recommended_body = tmpl.body;
+          return row;
+        }));
+        try {
+          const results = await Promise.all(promises);
+          // write enriched CSV
+          fs.mkdirSync('outputs', { recursive: true });
+          const outPath = path.join('outputs', `enriched_${Date.now()}.csv`);
+          const headers = Object.keys(results[0] || {});
+          const csvOut = [headers.join(',')].concat(results.map(r => headers.map(h => JSON.stringify(r[h] || '')).join(','))).join('\n');
+          fs.writeFileSync(outPath, csvOut);
+          // remove upload
+          fs.unlinkSync(filepath);
+          res.json({ ok: true, rows: results.length, file: outPath, preview: results.slice(0,5) });
+        } catch (e) {
+          console.error(e);
+          res.status(500).json({error: e.message});
+        }
+      });
+  });
+});
+
+// ---------- Endpoint to send single email (for test & verification) ----------
+app.post('/send', async (req, res) => {
+  const {to, subject, body} = req.body;
+  if (!to || !subject || !body) return res.status(400).json({error:'to,subject,body required'});
+  try {
+    const r = await sendViaMailgun(to, subject, body);
+    res.json({ok:true, id: r && r.id ? r.id : r});
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({error: e.message});
+  }
+});
+
+// ---------- Bulk send endpoint (reads an enriched CSV path you got from /upload-csv response) ----------
+app.post('/send-bulk', async (req, res) => {
+  const { filePath, throttlePerSecond } = req.body;
+  if (!filePath) return res.status(400).json({error:'filePath required (path from /upload-csv response)'});
+  if (!fs.existsSync(filePath)) return res.status(400).json({error:'file not found'});
+  const rows = [];
+  fs.createReadStream(filePath)
+    .pipe(csv())
+    .on('data', (data) => rows.push(data))
+    .on('end', async () => {
+      // send sequentially with a small delay to avoid spikes
+      const results = [];
+      const throttle = throttlePerSecond && Number(throttlePerSecond) > 0 ? Number(throttlePerSecond) : 5; // default 5 emails/sec
+      const delayMs = Math.ceil(1000 / throttle);
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const to = r.found_email || r.email || r.contact_email;
+        const subject = r.recommended_subject;
+        const body = r.recommended_body;
+        if (!to) {
+          results.push({row:i, status:'skipped_no_email'});
+          continue;
+        }
+        try {
+          const sendResp = await sendViaMailgun(to, subject, body);
+          results.push({row:i, status:'sent', resp: sendResp});
+        } catch (e) {
+          console.error('send error', e.message);
+          results.push({row:i, status:'error', error: e.message});
+        }
+        // basic delay
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+
+      res.json({ok:true, total: rows.length, results});
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server up on ${PORT}`));
+
+.env.example
+# choose provider keys (at least one)
+HUNTER_API_KEY=your_hunter_api_key
+SNOV_API_KEY=your_snov_api_key
+
+# Mail sending (Mailgun)
+MAILGUN_API_KEY=your_mailgun_api_key
+MAILGUN_DOMAIN=mg.yourdomain.com
+FROM_EMAIL=Zasha <hello@yourdomain.com>
+
+# General
+SIGNOFF_NAME=Your Name
+CONCURRENT_LOOKUPS=5
+SEND_BATCH_DELAY_MS=1000
+PORT=3000
+
+README (quick deploy steps to Replit)
+1. Create a new Replit -> Node.js project.
+2. Paste package.json, server.js, .env.example content into files.
+3. In Replit Secrets (lock icon) add the environment variables (SNOV_API_KEY or HUNTER_API_KEY, MAILGUN_API_KEY, MAILGUN_DOMAIN, FROM_EMAIL).
+4. Install packages (Replit usually auto-installs; otherwise run `npm install`).
+5. Run the Repl. You will get a public URL like https://<replname>.<username>.repl.co.
+6. Use /upload-csv (POST form-data file, field name "file") to upload your scraped CSV.
+   - The response returns the path to enriched CSV in `outputs/`.
+7. Inspect the enriched CSV, then call /send-bulk with JSON body:
+   {
+     "filePath": "outputs/enriched_....csv",
+     "throttlePerSecond": 5
+   }
+   Adjust throttlePerSecond to respect your sending provider limits.
+Notes:
+- For testing, use /send to send one email.
+- Always warm up sending domain & keep low throttle at first.

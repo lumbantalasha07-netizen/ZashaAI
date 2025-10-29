@@ -1,0 +1,83 @@
+**Prompt for Replit AI:**
+
+Build a complete full-stack web app called **Zasha Outreach Automator** using **Node.js + Express + minimal HTML/JS frontend**.
+
+### 🧩 Features:
+
+1. **Upload CSV of leads**
+
+   * CSV columns: `first_name,last_name,company,website,domain,has_website,profile_url`
+   * Store temporarily in memory.
+
+2. **Email Lookup**
+
+   * Use **Snov.io API** for email finding and verification.
+   * Example API endpoint: `https://api.snov.io/v1/get-emails-from-names`.
+   * Use environment variable `SNOV_API_KEY`.
+
+3. **Cold DM / Email Generator**
+
+   * If `has_website = true`, generate:
+
+     ```
+     Hi [FirstName], noticed [Company]’s site — quick idea to add AI automation that increases online orders and cuts staff time.
+
+     We build a small automation (menu + chatbot + order routing) that typically lifts online conversions in 30 days. Interested in a 15-minute demo next week?
+
+     — Zasha
+     ```
+   * If `has_website = false`, generate:
+
+     ```
+     Hi [FirstName], I scraped your profile — I can build a modern website for [Company] and add simple AI automations (chat/order/booking) so you start taking more orders online.
+
+     I can show a one-page plan and estimate in 15 minutes. When works best for a quick call?
+
+     — Zasha
+     ```
+
+4. **Mail Sending**
+
+   * Integrate **Mailgun** (`MAILGUN_API_KEY`, `MAILGUN_DOMAIN`) for sending.
+   * Include form fields for subject, body, and “Send All” option.
+   * Display send status (success/failure).
+
+5. **Frontend Dashboard**
+
+   * Simple HTML dashboard with:
+
+     * CSV upload form
+     * “Process” button
+     * Table showing leads, found emails, message preview
+     * “Send All” button
+   * Use basic Tailwind styling or plain HTML.
+
+6. **Environment Variables**
+
+   ```
+   SNOV_API_KEY=
+   MAILGUN_API_KEY=
+   MAILGUN_DOMAIN=
+   FROM_EMAIL=Zasha <hello@yourdomain.com>
+   PORT=3000
+   ```
+
+7. **Run Instructions**
+
+   * User pastes `.env` values in Replit Secrets.
+   * Click “Run”.
+   * Visit the provided URL to upload CSV and manage outreach.
+
+8. **App name and look**
+
+   * Title: **Zasha Outreach Automator**
+   * Use a clean modern look with light colors (white + light blue).
+   * Show “Built by Zasha” at bottom.
+
+### 🛠️ Notes:
+
+* If Snov.io API fails, just skip that row (still generate messages).
+* Include clear console logs for debugging (uploads, API calls, emails sent).
+* Keep code in one file (`server.js`) with a small `/public` folder for frontend HTML.
+
+Make sure the final app runs fully inside Replit with no external setup except for adding API keys.
