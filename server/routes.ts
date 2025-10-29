@@ -99,11 +99,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
-      const csvContent = req.file.buffer.toString("utf-8");
+      // Remove UTF-8 BOM if present
+      let csvContent = req.file.buffer.toString("utf-8");
+      if (csvContent.charCodeAt(0) === 0xFEFF) {
+        csvContent = csvContent.slice(1);
+      }
+
       const records = parse(csvContent, {
         columns: true,
         skip_empty_lines: true,
         trim: true,
+        bom: true, // Also handle BOM in the parser
+        relax_quotes: true, // Be more lenient with quotes
+        relax_column_count: true, // Allow inconsistent column counts
       });
 
       console.log(`Processing ${records.length} leads from CSV`);

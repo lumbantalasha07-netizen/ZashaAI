@@ -34,13 +34,19 @@ export function CsvUploadZone({ onUploadComplete }: CsvUploadZoneProps) {
     const files = e.dataTransfer.files;
     if (files && files[0]) {
       const file = files[0];
-      if (file.type === "text/csv" || file.name.endsWith(".csv")) {
+      // Accept various CSV MIME types and file extensions
+      const isCSV = file.name.endsWith(".csv") || 
+                    file.type === "text/csv" || 
+                    file.type === "application/vnd.ms-excel" ||
+                    file.type === "text/plain";
+      
+      if (isCSV) {
         setFile(file);
       } else {
         toast({
           variant: "destructive",
           title: "Invalid File Type",
-          description: "Please upload a CSV file.",
+          description: "Please upload a CSV file (.csv extension).",
         });
       }
     }
@@ -63,6 +69,7 @@ export function CsvUploadZone({ onUploadComplete }: CsvUploadZoneProps) {
       const formData = new FormData();
       formData.append("file", file);
 
+      console.log("Uploading CSV file:", file.name, "Size:", file.size, "Type:", file.type);
       setUploadProgress(30);
 
       const response = await fetch("/api/leads/upload", {
@@ -70,15 +77,22 @@ export function CsvUploadZone({ onUploadComplete }: CsvUploadZoneProps) {
         body: formData,
       });
 
+      console.log("Upload response status:", response.status);
       setUploadProgress(80);
 
       if (!response.ok) {
-        throw new Error("Upload failed");
+        const errorData = await response.json().catch(() => ({ error: "Upload failed" }));
+        console.error("Upload error:", errorData);
+        throw new Error(errorData.error || errorData.details || `Upload failed with status ${response.status}`);
       }
 
       const data = await response.json();
+      console.log("Upload successful:", data);
 
       setUploadProgress(100);
+
+      // Invalidate the leads query to refresh the list
+      await queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
 
       toast({
         title: "Upload Successful",
@@ -90,6 +104,7 @@ export function CsvUploadZone({ onUploadComplete }: CsvUploadZoneProps) {
       setUploadProgress(0);
       onUploadComplete();
     } catch (error) {
+      console.error("Upload error caught:", error);
       toast({
         variant: "destructive",
         title: "Upload Failed",

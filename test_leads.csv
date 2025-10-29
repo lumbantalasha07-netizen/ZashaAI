@@ -1,0 +1,6 @@
+first_name,last_name,company,website,domain,has_website,profile_url,email
+John,Doe,Acme Corp,https://acme.com,acme.com,true,https://linkedin.com/in/johndoe,john@acme.com
+Jane,Smith,Tech Solutions,,techsolutions.com,false,https://linkedin.com/in/janesmith,jane@techsolutions.com
+Robert,Johnson,Global Widgets,https://globalwidgets.com,globalwidgets.com,true,https://linkedin.com/in/robertj,robert@globalwidgets.com
+Maria,Garcia,Digital Services,,digitalservices.io,false,https://linkedin.com/in/mariag,
+Michael,Brown,Innovation Labs,https://innovationlabs.io,innovationlabs.io,true,https://linkedin.com/in/michaelb,michael@innovationlabs.io
